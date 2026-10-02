@@ -95,7 +95,13 @@ export function fuzzSpot(spot: SpotRow, place: PlaceRow | null, level: FuzzLevel
   };
 }
 
-/** 带缓存的模糊化（结果恒定，避免同一机位多次请求模糊到不同位置） */
+/**
+ * 带缓存的模糊化（结果恒定，避免同一机位多次请求模糊到不同位置）。
+ *
+ * 缓存只做加速，不能被信任：读取后会校验 (geohash, 坐标) 是否与当前机位在该级别下
+ * 的网格解一致。历史坏档（老版本写错的坐标）或机位迁移后未清理的陈旧档会被立即
+ * 丢弃并重算（自愈），保证"缓存被污染也不会把错误/更精确的位置对外发出去"。
+ */
 export function fuzzSpotCached(
   spot: SpotRow,
   place: PlaceRow | null,
@@ -108,7 +114,7 @@ export function fuzzSpotCached(
     | { fuzz_lat: number | null; fuzz_lng: number | null; fuzz_label: string; geohash: string }
     | undefined;
 
-  if (cached) {
+  if (cached && cacheIsValid(spot, level, cached)) {
     return {
       fuzzLevel: level,
       lat: cached.fuzz_lat,
@@ -137,6 +143,27 @@ export function fuzzSpotCached(
     nowIso(),
   );
   return result;
+}
+
+/**
+ * 校验一条历史缓存是否仍可信：
+ * - geohash 必须等于当前坐标在该级别下的编码（机位迁移后旧缓存立即失效）；
+ * - 区域级（district/neighborhood）必须无坐标点，网格级必须是当前网格中心；
+ * - 缓存坐标若比当前级别更精确（exact/g100 漂移值），视为坏档。
+ */
+function cacheIsValid(
+  spot: SpotRow,
+  level: FuzzLevel,
+  cached: { fuzz_lat: number | null; fuzz_lng: number | null; fuzz_label: string; geohash: string },
+): boolean {
+  const expected = fuzzSpot(spot, null, level);
+  if (cached.geohash !== expected.geohash) return false;
+  if (cached.fuzz_lat === null || cached.fuzz_lng === null) {
+    return expected.lat === null && expected.lng === null && Boolean(cached.fuzz_label);
+  }
+  if (expected.lat === null || expected.lng === null) return false;
+  // 坐标必须与当前网格中心逐位一致；任何抖动/越界/更精确的值都判坏
+  return cached.fuzz_lat === expected.lat && cached.fuzz_lng === expected.lng;
 }
 
 export function clearFuzzCache(spotId: string): void {

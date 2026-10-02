@@ -60,7 +60,7 @@ export function createShareLink(params: {
   return getDb().prepare('SELECT * FROM share_link WHERE id = ?').get(id) as ShareLinkRow;
 }
 
-/** 校验分享令牌：撤销、过期、密码三者都必须校验（文档 13.4） */
+/** 校验分享令牌：撤销、过期、密码、模糊级别四者都必须校验（文档 13.4） */
 export function validateShareToken(token: string, password?: string | null): ShareLinkRow {
   const row = getDb().prepare('SELECT * FROM share_link WHERE token = ?').get(token) as ShareLinkRow | undefined;
   if (!row) throw errors.notFound('分享链接');
@@ -72,6 +72,12 @@ export function validateShareToken(token: string, password?: string | null): Sha
   if (new Date(row.expires_at).getTime() < Date.now()) {
     logAccess(row.id, false, 'expired');
     throw errors.shareExpired();
+  }
+  // 历史坏档兜底：CHECK 约束上线前创建的链接可能是 exact / g100。
+  // 老库是从无约束时代迁移过来的，不能信任存量数据，这里实时拒绝而不是放行精确坐标。
+  if (!isShareFuzzLevelAllowed(row.fuzz_level as FuzzLevel)) {
+    logAccess(row.id, false, 'fuzz_too_precise');
+    throw errors.fuzzTooPrecise();
   }
   if (row.password_hash) {
     if (!password) {

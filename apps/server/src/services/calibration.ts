@@ -200,13 +200,29 @@ export function undoCalibration(calibrationId: string, libraryId: string, inspir
   const timing = loadTiming(inspirationId);
   if (timing) {
     if (field === 'azimuth_tolerance') {
-      db.prepare('UPDATE timing SET azimuth_tolerance = ? WHERE id = ?').run(before as number, timing.id);
+      // 历史坏档的 before_value 可能解析为 null/非法类型；NOT NULL 列不接受 null，
+      // 此时放弃恢复数值（只把校准记录标记为已撤销），绝不用脏值覆盖当前 timing。
+      if (typeof before === 'number' && Number.isFinite(before)) {
+        db.prepare('UPDATE timing SET azimuth_tolerance = ? WHERE id = ?').run(before, timing.id);
+      }
     } else if (field === 'window_tolerance_min') {
-      db.prepare('UPDATE timing SET window_tolerance_min = ? WHERE id = ?').run(before as number, timing.id);
+      if (typeof before === 'number' && Number.isFinite(before)) {
+        db.prepare('UPDATE timing SET window_tolerance_min = ? WHERE id = ?').run(before, timing.id);
+      }
     } else if (field === 'weather_profile') {
       const profile = parseJson<{ cloudCoverPct?: unknown }>(timing.weather_profile, {});
-      profile.cloudCoverPct = before as { min: number; max: number };
-      db.prepare('UPDATE timing SET weather_profile = ? WHERE id = ?').run(toJson(profile), timing.id);
+      const cloud = before as { min?: unknown; max?: unknown } | null;
+      // 只有当旧值是合法的 {min,max} 数值区间时才恢复，避免坏档写出半截 JSON
+      if (
+        cloud &&
+        typeof cloud.min === 'number' &&
+        typeof cloud.max === 'number' &&
+        Number.isFinite(cloud.min) &&
+        Number.isFinite(cloud.max)
+      ) {
+        profile.cloudCoverPct = cloud as { min: number; max: number };
+        db.prepare('UPDATE timing SET weather_profile = ? WHERE id = ?').run(toJson(profile), timing.id);
+      }
     }
   }
   db.prepare('UPDATE calibration_log SET undone_at = ? WHERE id = ?').run(nowIso(), calibrationId);
