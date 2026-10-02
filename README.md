@@ -43,7 +43,8 @@ npm start          # 后端 3000 端口同时托管前端，SPA fallback 已配�
 ## 验证（这三条命令就是"真的能跑"的证明）
 
 ```bash
-npm test                        # 76 个自动化测试：天文 / 几何 / geohash / 窗口判定 / API 闭环
+npm test                        # 147 个自动化测试：天文 / 几何 / geohash / 窗口判定 /
+                                #   分层矩阵（极区日期 · 断网降级 · 模糊化 · 并发撤销 · 历史坏档）/ API 闭环
 npm run smoke                   # 69 项真实 HTTP 断言（需先启动服务端）
 npm run test:e2e                # 2 个真实浏览器闭环用例（需先 npm run build && npm start）
 ```
@@ -105,7 +106,22 @@ origin/
 
 ---
 
-## 外部依赖
+## 分层测试矩阵（窗口 / 模糊化 / 分享）
+
+`apps/server/tests/` 下除原有闭环测试外，另有四张按 **L1 纯函数 → L2 service+DB → L3 HTTP** 分层的矩阵，全部随机回放均固定种子（mulberry32），同一文件连跑结果逐次一致：
+
+| 文件 | 层 | 覆盖的硬场景 |
+| --- | --- | --- |
+| `windowPolarL1.test.ts` | L1 | 极昼/极夜下全部太阳事件锚点不可解、正午/固定钟点仍可用、极圈起止边界连续、南半球反季节、UTC±12 日界不串天、240 组随机（纬度×时区×锚点×日期）回放 |
+| `degradedL2.test.ts` | L2 | `WEATHER_PROVIDER=off` 不碰网不落缓存、降级最高 marginal 且标注「未含天气」、天文坏时降级不救命、恢复网络后雨天硬性项重新生效、160 组双模式回放 |
+| `fuzzingL2.test.ts` | L2 | 网格中心非随机抖动（同格多点同输出、重复 100 次恒定）、6 级行为表、exact/g100 强制降级、缓存唯一键、300 组坐标×级别回放 |
+| `calibrationL2.test.ts` | L2 | 50 路并发撤销恰 1 次成功、重复撤销 400、跨库 404、坏 `before_value`（非法 JSON/越界/类型错）/孤儿 timing/未知 field 不炸库不写脏值 |
+| `shareL3.test.ts` | L3 | HTTP 闭环：降级落库、撤销即时失效（含图片令牌）、过期/密码三态、并发撤销、坏档（非法 fuzz_level、乱文本 revoked/expires、坏快照）安全侧优先、48 组随机状态码矩阵 |
+
+矩阵实施过程中发现并修复了两个真实的**坏档安全缺陷**：乱文本 `expires_at` 曾被当成「未过期」放行（NaN 比较恒 false）；`undoCalibration` 曾对坏 `before_value` 静默返回且无并发守卫。另在读取路径新增 `safeFuzzLevel` 兜底非法级别。
+
+---
+
 
 只有一个可选的外部数据源，**完全免费、无需 API Key**：
 

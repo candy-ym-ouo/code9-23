@@ -18,7 +18,7 @@ import type {
 import { TAG_DOMAINS } from '@flil/shared';
 import { getDb, parseJson, rowToBool } from '../db.js';
 import { config } from '../config.js';
-import { fuzzSpotCached, type PlaceRow, type SpotRow } from './fuzzing.js';
+import { fuzzSpotCached, safeFuzzLevel, type PlaceRow, type SpotRow } from './fuzzing.js';
 import { loadTiming, timingRowToDto, windowSummary } from './windowEngine.js';
 import type { AssetRow } from './assets.js';
 
@@ -60,7 +60,8 @@ export function toAssetDto(row: AssetRow): AssetDto {
  */
 export function toSpotDto(spot: SpotRow, place: PlaceRow | null, ctx: SerializeContext): SpotDto {
   const canSeePrecise = ctx.role === 'owner' && ctx.includePrecise === true;
-  const level: FuzzLevel = canSeePrecise ? 'exact' : ctx.defaultFuzzLevel;
+  // 库里的级别可能是历史坏档值：读取时再兜底一次，未知值退到安全级别
+  const level: FuzzLevel = canSeePrecise ? 'exact' : safeFuzzLevel(ctx.defaultFuzzLevel);
   const fuzz = fuzzSpotCached(spot, place, level === 'exact' ? 'g500' : level);
 
   return {

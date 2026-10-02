@@ -16,6 +16,7 @@ import {
   shareStatus,
   validateShareToken,
 } from '../services/share.js';
+import { safeFuzzLevel } from '../services/fuzzing.js';
 import { albumItemsDetailed, getSnapshot } from '../services/albums.js';
 import { requireInspiration } from '../services/inspirations.js';
 import { toInspirationDto } from '../services/serialization.js';
@@ -134,7 +135,8 @@ publicShareRouter.get(
     const ctx = {
       libraryId: link.library_id,
       role: 'member' as const,
-      defaultFuzzLevel: link.fuzz_level as FuzzLevel,
+      // 坏档兜底：库里的级别可能被改成非法值，读取时强制收敛回安全级别
+      defaultFuzzLevel: safeFuzzLevel(link.fuzz_level as FuzzLevel),
       includePrecise: false,
     };
 

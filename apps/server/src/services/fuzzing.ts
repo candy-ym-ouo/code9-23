@@ -49,6 +49,16 @@ export function isShareFuzzLevelAllowed(level: FuzzLevel): boolean {
 }
 
 /**
+ * 读取路径的级别兜底：历史坏档里 fuzz_level 可能被写成未知值。
+ * 未知一律退到最粗的安全默认（g500 或更粗由调用方决定），绝不按 exact 处理。
+ */
+export function safeFuzzLevel(level: unknown, fallback: FuzzLevel = 'g500'): FuzzLevel {
+  return typeof level === 'string' && (SHARE_ALLOWED_FUZZ_LEVELS as string[]).includes(level)
+    ? (level as FuzzLevel)
+    : fallback;
+}
+
+/**
  * 计算某机位在某模糊级别下的对外坐标。
  * 关键：取 geohash 网格中心，而不是原坐标 + 随机抖动（文档 13.2）——
  * 随机抖动可被多次请求平均反推真值，网格中心只有一个稳定解。

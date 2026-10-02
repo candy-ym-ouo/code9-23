@@ -1,5 +1,6 @@
 import type { MissReason } from '@flil/shared';
 import { getDb, newId, nowIso, parseJson, toJson } from '../db.js';
+import { errors } from '../http/errors.js';
 import { loadTiming } from './windowEngine.js';
 import { touch } from './inspirations.js';
 
@@ -187,27 +188,79 @@ export function listCalibration(inspirationId: string): Record<string, unknown>[
   }));
 }
 
-/** 撤销一次收窄（校准必须可回溯、可撤销） */
-export function undoCalibration(calibrationId: string, libraryId: string, inspirationId: string): void {
+/**
+ * 撤销一次收窄（校准必须可回溯、可撤销）。
+ *
+ * 坏档防护（历史备份里可能存在旧版本写入的异常数据）：
+ * - 记录不存在 / 跨库 / 已撤销 → 抛错，不静默 200（接口层据此给出 404/400）。
+ * - before_value 损坏、类型不对或 timing 行已丢失：只标记 undone_at，绝不把脏值写回 NOT NULL 列。
+ * - 幂等：已撤销的记录再次撤销返回 400，并发撤销只有一方成功（UPDATE 带 undone_at IS NULL 守卫）。
+ */
+export function undoCalibration(calibrationId: string, libraryId: string, inspirationId: string): {
+  restored: boolean;
+  field: string;
+  skippedReason?: string;
+} {
   const db = getDb();
   const row = db
     .prepare('SELECT * FROM calibration_log WHERE id = ? AND inspiration_id = ?')
     .get(calibrationId, inspirationId) as Record<string, unknown> | undefined;
-  if (!row || row.library_id !== libraryId) return;
+  if (!row || row.library_id !== libraryId) throw errors.notFound('校准记录');
+  if (row.undone_at) throw errors.badRequest('该校准记录已撤销，请勿重复操作');
 
   const field = row.field as string;
   const before = parseJson<unknown>(row.before_value, null);
   const timing = loadTiming(inspirationId);
-  if (timing) {
-    if (field === 'azimuth_tolerance') {
-      db.prepare('UPDATE timing SET azimuth_tolerance = ? WHERE id = ?').run(before as number, timing.id);
-    } else if (field === 'window_tolerance_min') {
-      db.prepare('UPDATE timing SET window_tolerance_min = ? WHERE id = ?').run(before as number, timing.id);
+
+  let restored = false;
+  let skippedReason: string | undefined;
+
+  const restore = db.transaction(() => {
+    if (!timing) {
+      skippedReason = 'timing_missing';
+    } else if (field === 'azimuth_tolerance' || field === 'window_tolerance_min') {
+      if (typeof before === 'number' && Number.isFinite(before) && before >= 0 && before <= 360) {
+        const column = field === 'azimuth_tolerance' ? 'azimuth_tolerance' : 'window_tolerance_min';
+        db.prepare(`UPDATE timing SET ${column} = ?, updated_at = ? WHERE id = ?`).run(
+          before,
+          nowIso(),
+          timing.id,
+        );
+        restored = true;
+      } else {
+        skippedReason = 'before_value_invalid';
+      }
     } else if (field === 'weather_profile') {
+      // 当前 profile 本身也可能是坏档 JSON：parseJson 已回退为 {}，不会抛错
       const profile = parseJson<{ cloudCoverPct?: unknown }>(timing.weather_profile, {});
-      profile.cloudCoverPct = before as { min: number; max: number };
-      db.prepare('UPDATE timing SET weather_profile = ? WHERE id = ?').run(toJson(profile), timing.id);
+      if (
+        before !== null &&
+        typeof before === 'object' &&
+        typeof (before as { min?: unknown }).min === 'number' &&
+        typeof (before as { max?: unknown }).max === 'number'
+      ) {
+        profile.cloudCoverPct = before as { min: number; max: number };
+        db.prepare('UPDATE timing SET weather_profile = ?, updated_at = ? WHERE id = ?').run(
+          toJson(profile),
+          nowIso(),
+          timing.id,
+        );
+        restored = true;
+      } else {
+        skippedReason = 'before_value_invalid';
+      }
+    } else {
+      // 未知字段（新版本可能产生旧代码不认识的收窄）：无值可恢复，仅留撤销痕迹
+      skippedReason = 'unknown_field';
     }
-  }
-  db.prepare('UPDATE calibration_log SET undone_at = ? WHERE id = ?').run(nowIso(), calibrationId);
+
+    // 守卫更新：并发撤销时只有一方 changes === 1
+    const res = db
+      .prepare('UPDATE calibration_log SET undone_at = ? WHERE id = ? AND undone_at IS NULL')
+      .run(nowIso(), calibrationId);
+    if (res.changes === 0) throw errors.badRequest('该校准记录已撤销，请勿重复操作');
+  });
+  restore();
+
+  return { restored, field, skippedReason };
 }

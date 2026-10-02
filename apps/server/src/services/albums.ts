@@ -4,7 +4,7 @@ import { getDb, newId, nowIso, parseJson, toJson } from '../db.js';
 import { errors } from '../http/errors.js';
 import { toAlbumDto, toGapDto, toInspirationDto, type SerializeContext } from './serialization.js';
 import { loadTiming } from './windowEngine.js';
-import { fuzzSpotCached, type PlaceRow, type SpotRow } from './fuzzing.js';
+import { fuzzSpotCached, safeFuzzLevel, type PlaceRow, type SpotRow } from './fuzzing.js';
 import type { AssetRow } from './assets.js';
 
 export const ALBUM_RULE_DEFAULTS = {
@@ -455,7 +455,7 @@ export function publishAlbum(
       const placeRow = spotRow
         ? ((db.prepare('SELECT * FROM place WHERE id = ?').get(spotRow.place_id) as PlaceRow | undefined) ?? null)
         : null;
-      if (spotRow) fuzz = fuzzSpotCached(spotRow, placeRow, ctx.defaultFuzzLevel);
+      if (spotRow) fuzz = fuzzSpotCached(spotRow, placeRow, safeFuzzLevel(ctx.defaultFuzzLevel));
     }
     const timingRow = loadTiming(item.inspiration_id);
 

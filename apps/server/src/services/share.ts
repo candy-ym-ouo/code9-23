@@ -65,11 +65,14 @@ export function validateShareToken(token: string, password?: string | null): Sha
   const row = getDb().prepare('SELECT * FROM share_link WHERE token = ?').get(token) as ShareLinkRow | undefined;
   if (!row) throw errors.notFound('分享链接');
 
+  // revoked_at 历史上可能被旧版本写成非空乱文本：非空即视为已撤销（安全侧优先）
   if (row.revoked_at) {
     logAccess(row.id, false, 'revoked');
     throw errors.shareRevoked();
   }
-  if (new Date(row.expires_at).getTime() < Date.now()) {
+  // expires_at 坏档（非法日期）按已过期处理：NaN 与任何数比较都为 false，必须显式拦截
+  const expiresMs = Date.parse(row.expires_at);
+  if (Number.isNaN(expiresMs) || expiresMs < Date.now()) {
     logAccess(row.id, false, 'expired');
     throw errors.shareExpired();
   }
@@ -114,7 +117,8 @@ export function listShareLinks(libraryId: string): ShareLinkRow[] {
 
 export function shareStatus(link: ShareLinkRow): 'active' | 'expired' | 'revoked' {
   if (link.revoked_at) return 'revoked';
-  if (new Date(link.expires_at).getTime() < Date.now()) return 'expired';
+  const expiresMs = Date.parse(link.expires_at);
+  if (Number.isNaN(expiresMs) || expiresMs < Date.now()) return 'expired';
   return 'active';
 }
 
